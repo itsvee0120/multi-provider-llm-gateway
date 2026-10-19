@@ -57,14 +57,20 @@ Later prompts:
 9. Record the missing prompt, add the blocking-call finding, and check the malformed-key test. (I stopped this one partway.)
 10. Rewrite this log to be short.
 11. Fix the malformed-key gap with fake keys and a closed local port, add Test 3 checks, and fill in the README test table.
+12. When building the app, create the gateway inside each request (`async with UnifiedLLMGateway() as gw`) and never cache it, to avoid "Event loop is closed" under Streamlit. (Interrupted before any change; applied in prompt 13.)
+13. Build `src/app.py` in Streamlit: provider and model dropdowns, prompt, max tokens, temperature slider, token-by-token streaming, a telemetry panel with cost to six decimals, and short error messages with no keys or tracebacks; test the helpers in `tests/test_app.py`.
 
 ## What the AI produced
 
 - **Code:** `src/schemas.py`, `src/pricing.py`, `src/exceptions.py`, `src/gateway.py`.
   - `UnifiedLLMGateway` streams OpenAI, Anthropic and Groq as one chunk format, and ends each stream with a telemetry chunk (tokens, latency, TTFT, tokens/sec, cost).
   - Errors are typed, and keys are redacted.
-- **Tests:** 7 test files plus `tests/fakes.py`, using fake clients and fake keys (the key tests use real SDK clients pointed at a closed local port).
-  - `uv run pytest -v`: 66 passed, 1 skipped. The skipped test is Test 2, which runs only with `RUN_LIVE_TESTS=1` and `OPENAI_API_KEY`.
+- **App:** `src/app.py` (Streamlit). A new gateway is created per run, never cached.
+  - Completion tokens are labelled "includes reasoning tokens" / "estimated", and cost is shown to six decimals.
+  - Typed errors become short messages. `.streamlit/config.toml` hides tracebacks as a backstop.
+  - Not yet run against a live provider.
+- **Tests:** 8 test files plus `tests/fakes.py`, using fake clients and fake keys (the key tests use real SDK clients pointed at a closed local port). The app's page tests run it headless, without reading `.env` or clicking Run.
+  - `uv run pytest -v`: 98 passed, 1 skipped. The skipped test is Test 2, which runs only with `RUN_LIVE_TESTS=1` and `OPENAI_API_KEY`.
 - **Pricing:** from the official pages: OpenAI and Anthropic verified 2026-10-18, Groq (console.groq.com/docs/models) 2026-10-19.
   - The prompt placeholders were filled from the installed SDKs and those pages.
 - **`README.md`:** telemetry definitions, assignment test table, cost limits.
