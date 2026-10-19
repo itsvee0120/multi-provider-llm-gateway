@@ -3,6 +3,22 @@
 An async streaming gateway (`UnifiedLLMGateway`) that puts OpenAI, Anthropic and Groq behind one
 interface and attaches token, latency and cost telemetry to the final chunk of each stream.
 
+## Setup
+
+1. Install [uv](https://docs.astral.sh/uv/), then run `uv sync`.
+2. Copy `.env.example` to `.env` and fill in the keys you have. A provider without a key
+   fails only when you pick it.
+3. Run the app: `uv run streamlit run src/app.py`
+4. Run the tests: `uv run pytest -v`
+
+## Architecture
+
+`UnifiedLLMGateway` (`src/gateway.py`) exposes one `stream()` method for OpenAI, Anthropic
+and Groq. Each provider's events are converted to `StreamChunk` objects: text deltas, then one
+final chunk with telemetry. Prices live in `src/pricing.py`, typed errors in `src/exceptions.py`,
+and the Streamlit UI in `src/app.py`. The UI creates the gateway inside each run instead of caching
+it, because async clients are tied to the event loop that created them.
+
 ## Run with Docker
 
 1. Copy `.env.example` to `.env` and fill in the keys you have (`OPENAI_API_KEY`,
@@ -38,8 +54,6 @@ Example from a live run (`openai/gpt-oss-20b` on Groq, 2026-10-19, prompt "Say h
 - Cost was $0.000055575 (`5.5575e-05`).
 
 These numbers aren't a bug. The extra prompt tokens are probably a hidden system prompt in gpt-oss's chat format. That's an inference: Groq doesn't expose it. The extra output tokens are reasoning, and the reasoning is also why visible text only started just before the end.
-
-When showing these numbers in a UI, label `output_tokens` "includes reasoning tokens" for reasoning models, and don't put log output in the UI.
 
 ## Assignment tests
 
