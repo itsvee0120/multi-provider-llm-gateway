@@ -31,6 +31,31 @@ These numbers aren't a bug. The extra prompt tokens are probably a hidden system
 
 When showing these numbers in a UI, label `output_tokens` "includes reasoning tokens" for reasoning models, and don't put log output in the UI.
 
+## Assignment tests
+
+Run with `uv run pytest -v`. Every test uses fake clients and makes no live API calls, except
+Test 2. The key tests point real SDK clients at a closed local port (127.0.0.1:9) with fake keys.
+
+| Assignment test | Checks | Test functions |
+|---|---|---|
+| **Test 1**: unified stream protocol | All providers yield the same `StreamChunk` shape: text deltas, then one final chunk with telemetry | `tests/test_gateway.py::test_openai_stream_is_normalized_with_final_telemetry`<br>`tests/test_gateway.py::test_anthropic_stream_is_normalized_and_usage_is_cumulative`<br>`tests/test_groq.py::test_groq_stream_is_normalized_and_skips_empty_chunks`<br>`tests/test_checklist.py::test_openai_skips_empty_choices_and_none_content` |
+| **Test 2**: tiktoken within ±10% | tiktoken's prompt count is within ±10% of the billed prompt tokens | `tests/test_live_tokenizer.py::test_tiktoken_estimate_within_10_percent_of_billed_prompt_tokens` (**skipped without an OpenAI key**) |
+| **Test 3**: telemetry sanity | On the final chunk, `cost_usd`, `tokens_per_second` and `ttft_ms` are all above zero, for OpenAI, Anthropic and Groq | `tests/test_checklist.py::test_final_chunk_telemetry_is_positive[openai\|anthropic\|groq]` |
+| **Test 4**: missing or malformed keys | A missing or malformed key raises `AuthenticationError` | Missing: `tests/test_security.py::test_missing_openai_key_is_an_auth_error`, `::test_missing_anthropic_key_is_an_auth_error`, `tests/test_groq.py::test_missing_groq_key_fails_only_when_groq_is_requested`<br>Malformed (`""`, `"   "`, `"sk-FAKE KEY"`, `"sk-FAKÉKEY"` × 3 providers): `tests/test_keys.py::test_malformed_key_raises_authentication_error`<br>Rejected by the provider (401): `tests/test_security.py::test_invalid_openai_key_maps_to_auth_error_without_leaking`, `::test_invalid_groq_key_maps_to_auth_error_without_leaking` |
+| **Test 5**: no key substrings in exceptions or logs | No part of a key appears in `str()`, `repr()`, attributes or captured logs, and nothing is chained (`__cause__`/`__context__` are `None`) | `tests/test_keys.py::test_malformed_key_raises_authentication_error`, `::test_trailing_newline_is_stripped_then_request_is_attempted`, `::test_unicode_error_while_building_request_is_typed_and_scrubbed`, `::test_unexpected_error_message_is_redacted`<br>`tests/test_security.py::test_invalid_openai_key_maps_to_auth_error_without_leaking`, `::test_invalid_groq_key_maps_to_auth_error_without_leaking`, `::test_rate_limit_carries_retry_after`, `::test_connection_error_mid_stream_is_typed`, `::test_gateway_repr_hides_keys`, `::test_redact_secrets_patterns` |
+
+**Test 2 is skipped without an OpenAI key.** It's a live, opt-in test: it only runs with
+`RUN_LIVE_TESTS=1` and `OPENAI_API_KEY` set. It uses a long (~1,100-token) prompt instead of the
+assignment's 50-word one, so OpenAI's few fixed chat-format tokens stay inside ±10%. It runs only on
+models flagged `tiktoken_comparable`, which excludes gpt-oss on Groq and Claude (see the tiktoken
+row in `ai_prompt_log.md`).
+
+**Test 3:** before this table was filled in, only `cost_usd > 0` was checked
+(`tests/test_pricing.py::test_single_token_on_cheapest_model_is_not_rounded_to_zero`). Neither
+`tokens_per_second > 0` nor `ttft_ms > 0` was asserted on a final chunk, so
+`test_final_chunk_telemetry_is_positive` was added. It uses a fake clock so latency and TTFT are
+never zero by chance.
+
 ## Cost calculation limits
 
 Costs come from the static table in `src/pricing.py` (standard-tier USD per million tokens, with the

@@ -97,3 +97,28 @@ def anthropic_events(texts: list[str], input_tokens: int, output_tokens: int) ->
 
 def http_response(status: int, headers: Optional[dict[str, str]] = None) -> httpx.Response:
     return httpx.Response(status, headers=headers, request=httpx.Request("POST", "https://example.invalid"))
+
+
+STEP_S = 0.1  # fake time that passes per streamed event
+
+
+class FakeClock:
+    """Stands in for `time` in the gateway module, so latency and TTFT are deterministic."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def perf_counter(self) -> float:
+        return self.now
+
+
+class ClockedStream(FakeStream):
+    """Advances the fake clock by STEP_S before delivering each event."""
+
+    def __init__(self, events: list[Any], clock: FakeClock) -> None:
+        super().__init__(events)
+        self._clock = clock
+
+    async def __anext__(self) -> Any:
+        self._clock.now += STEP_S
+        return await super().__anext__()

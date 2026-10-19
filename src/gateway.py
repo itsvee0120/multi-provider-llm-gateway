@@ -132,9 +132,10 @@ _ANTHROPIC_SDK_ERRORS = (anthropic.AnthropicError,)
 class UnifiedLLMGateway:
     """Stream completions from OpenAI, Anthropic or Groq as provider-agnostic `StreamChunk`s.
 
-    API keys default to OPENAI_API_KEY / ANTHROPIC_API_KEY / GROQ_API_KEY. A missing key only
-    fails when a model from that provider is requested. The OpenAI and Anthropic clients are
-    created on first use; the Groq client is created here when GROQ_API_KEY is set.
+    API keys default to OPENAI_API_KEY / ANTHROPIC_API_KEY / GROQ_API_KEY and are stripped of
+    surrounding whitespace. A missing or malformed key only fails when a model from that provider
+    is requested, so one bad key never stops the gateway starting. The OpenAI and Anthropic
+    clients are created on first use; the Groq client is created here when GROQ_API_KEY is set.
     """
 
     def __init__(
@@ -148,21 +149,27 @@ class UnifiedLLMGateway:
         anthropic_client: Optional[AsyncAnthropic] = None,
         groq_api_key: Optional[str] = None,
         groq_client: Optional[AsyncOpenAI] = None,
+        openai_base_url: Optional[str] = None,
+        anthropic_base_url: Optional[str] = None,
+        groq_base_url: str = GROQ_BASE_URL,
     ) -> None:
-        self._openai_key = _secret(openai_api_key or os.environ.get("OPENAI_API_KEY"))
-        self._anthropic_key = _secret(anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY"))
-        self._groq_key = _secret(groq_api_key or os.environ.get("GROQ_API_KEY"))
+        self._openai_key = _secret(_resolve_key(openai_api_key, "OPENAI_API_KEY"))
+        self._anthropic_key = _secret(_resolve_key(anthropic_api_key, "ANTHROPIC_API_KEY"))
+        self._groq_key = _secret(_resolve_key(groq_api_key, "GROQ_API_KEY"))
         self._timeout_s = timeout_s
         self._max_retries = max_retries
+        self._openai_base_url = openai_base_url
+        self._anthropic_base_url = anthropic_base_url
         self._openai_client = openai_client
         self._anthropic_client = anthropic_client
         # Groq is OpenAI-compatible: same SDK, different base URL. Created once, here; without a
         # key it stays None and _groq() raises AuthenticationError when a Groq model is requested.
+        # Building the client does not validate or send the key; _groq() validates it first.
         self._groq_client = groq_client
-        if self._groq_client is None and self._groq_key is not None:
+        if self._groq_client is None and self._groq_key is not None and self._groq_key.get_secret_value():
             self._groq_client = AsyncOpenAI(
                 api_key=self._groq_key.get_secret_value(),
-                base_url=GROQ_BASE_URL,
+                base_url=groq_base_url,
                 timeout=timeout_s,
                 max_retries=max_retries,
             )
@@ -268,8 +275,12 @@ class UnifiedLLMGateway:
                             yield StreamChunk(delta_text=text, provider=provider, model=model)
         except _OPENAI_SDK_ERRORS as exc:
             error = self._map_error(provider, exc)
+        except GatewayProviderError as exc:  # e.g. a malformed key, from get_client()
+            error = exc
+        except Exception as exc:
+            error = self._map_unexpected(provider, exc)
         if error is not None:
-            raise error  # raised outside `except` so the SDK exception is not attached as context
+            raise error  # raised outside `except` so the original exception is not attached as context
 
         if usage is not None:
             input_tokens, output_tokens = usage.prompt, usage.completion
@@ -279,7 +290,7 @@ class UnifiedLLMGateway:
                 "%s stream for %s ended without usage; falling back to tiktoken counts", provider, model
             )
             input_tokens = estimated_input or 0
-            output_tokens = count_tokens("".join(text_parts), model) or 0
+            output_tokens = await asyncio.to_thread(count_tokens, "".join(text_parts), model) or 0
 
         yield StreamChunk(
             delta_text="",
@@ -352,13 +363,18 @@ class UnifiedLLMGateway:
                             input_tokens = event.usage.input_tokens
         except _ANTHROPIC_SDK_ERRORS as exc:
             error = self._map_error(Provider.ANTHROPIC, exc)
+        except GatewayProviderError as exc:  # e.g. a malformed key, from _anthropic()
+            error = exc
         except TypeError as exc:
-            # The Anthropic SDK signals "no credentials configured" with a bare TypeError.
-            if "authentication method" not in str(exc):
-                raise
-            error = AuthenticationError(
-                "No Anthropic credentials configured; set ANTHROPIC_API_KEY", provider=Provider.ANTHROPIC
-            )
+            if "authentication method" in str(exc):
+                # The Anthropic SDK signals "no credentials configured" with a bare TypeError.
+                error = AuthenticationError(
+                    "No Anthropic credentials configured; set ANTHROPIC_API_KEY", provider=Provider.ANTHROPIC
+                )
+            else:
+                error = self._map_unexpected(Provider.ANTHROPIC, exc)
+        except Exception as exc:
+            error = self._map_unexpected(Provider.ANTHROPIC, exc)
         if error is not None:
             raise error
 
@@ -373,25 +389,51 @@ class UnifiedLLMGateway:
     # ----------------------------------------------------------------------- clients & errors
 
     def _openai(self) -> AsyncOpenAI:
+        _check_key_format(Provider.OPENAI, self._openai_key)
         if self._openai_client is None:
             self._openai_client = AsyncOpenAI(
-                api_key=_reveal(self._openai_key), timeout=self._timeout_s, max_retries=self._max_retries
+                api_key=_reveal(self._openai_key),
+                base_url=self._openai_base_url,
+                timeout=self._timeout_s,
+                max_retries=self._max_retries,
             )
         return self._openai_client
 
     def _anthropic(self) -> AsyncAnthropic:
+        _check_key_format(Provider.ANTHROPIC, self._anthropic_key)
         if self._anthropic_client is None:
             self._anthropic_client = AsyncAnthropic(
-                api_key=_reveal(self._anthropic_key), timeout=self._timeout_s, max_retries=self._max_retries
+                api_key=_reveal(self._anthropic_key),
+                base_url=self._anthropic_base_url,
+                timeout=self._timeout_s,
+                max_retries=self._max_retries,
             )
         return self._anthropic_client
 
     def _groq(self) -> AsyncOpenAI:
+        _check_key_format(Provider.GROQ, self._groq_key)
         if self._groq_client is None:
             raise AuthenticationError(
                 "No Groq API key configured; set GROQ_API_KEY to use Groq models", provider=Provider.GROQ
             )
         return self._groq_client
+
+    def _map_unexpected(self, provider: Provider, exc: Exception) -> GatewayProviderError:
+        """Turn a non-SDK failure while building or sending a request into a typed error.
+
+        The original exception is dropped, not chained: its attributes can hold raw header values
+        (UnicodeEncodeError.object is the whole `Bearer <key>` string). Unicode errors keep only their
+        type name, because their message quotes the offending character, which may be part of a key.
+        """
+        name = type(exc).__name__
+        if isinstance(exc, UnicodeError):
+            detail = "a request header could not be encoded"
+        else:
+            keys = (self._openai_key, self._anthropic_key, self._groq_key)
+            detail = redact_secrets(str(exc), [k.get_secret_value() for k in keys if k is not None])
+        mapped = GatewayProviderError(f"Request could not be built or sent ({name}): {detail}", provider=provider)
+        logger.warning("%s request failed before a response: %s", provider, mapped)
+        return mapped
 
     def _map_error(self, provider: Provider, exc: Exception) -> GatewayProviderError:
         keys = (self._openai_key, self._anthropic_key, self._groq_key)
@@ -429,8 +471,28 @@ class UnifiedLLMGateway:
         return mapped
 
 
+def _resolve_key(explicit: Optional[str], env_var: str) -> Optional[str]:
+    # An explicitly passed key, even "", wins over the environment.
+    return explicit if explicit is not None else os.environ.get(env_var)
+
+
 def _secret(value: Optional[str]) -> Optional[SecretStr]:
-    return SecretStr(value) if value else None
+    """None means "no key configured"; anything else is kept (stripped) and validated on first use."""
+    return SecretStr(value.strip()) if value is not None else None
+
+
+_PROVIDER_LABELS = {Provider.OPENAI: "OpenAI", Provider.ANTHROPIC: "Anthropic", Provider.GROQ: "Groq"}
+# Keys travel in an HTTP header: printable ASCII only, no whitespace or control characters.
+# Prefixes (sk-, gsk_, ...) are deliberately not checked.
+_VALID_KEY = re.compile(r"[\x21-\x7e]+")
+
+
+def _check_key_format(provider: Provider, key: Optional[SecretStr]) -> None:
+    if key is not None and not _VALID_KEY.fullmatch(key.get_secret_value()):
+        # Never include any part of the key in the message.
+        raise AuthenticationError(
+            f"{_PROVIDER_LABELS[provider]} API key is empty or contains invalid characters", provider=provider
+        )
 
 
 def _reveal(value: Optional[SecretStr]) -> Optional[str]:
