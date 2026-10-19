@@ -3,6 +3,16 @@
 An async streaming gateway (`UnifiedLLMGateway`) that puts OpenAI, Anthropic and Groq behind one
 interface and attaches token, latency and cost telemetry to the final chunk of each stream.
 
+## Run with Docker
+
+1. Copy `.env.example` to `.env` and fill in the keys you have (`OPENAI_API_KEY`,
+   `ANTHROPIC_API_KEY`, `GROQ_API_KEY`). A provider without a key fails only when you pick it.
+2. Run `docker compose up --build`.
+3. Open http://localhost:8501.
+
+Keys are passed to the container at runtime through `env_file: .env`. `.env` is listed in
+`.dockerignore`, so it is never copied into the image.
+
 ## Telemetry definitions
 
 The final chunk of every stream (`is_final=True`) carries a `ChunkTelemetry`:

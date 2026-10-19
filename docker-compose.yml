@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8501:8501"
+    # Keys are read from .env when the container starts; they are never in the image or this file.
+    env_file: .env
