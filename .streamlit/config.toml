@@ -1,0 +1,4 @@
+# Backstop: src/app.py catches every exception itself, but if one ever escaped, Streamlit's default
+# ("full") would print the exception message and traceback in the browser.
+[client]
+showErrorDetails = "none"
